@@ -1593,6 +1593,31 @@ pub mod tests {
                 builtin: Box::new(uniffi_meta::Type::String),
             })
         );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(
+                &ir,
+                &mut cache,
+                "remote_types::consumer",
+                "std::io::Error",
+                None
+            ),
+            Ok(uniffi_meta::Type::Object {
+                module_path: "remote_types::remote".into(),
+                name: "Error".into(),
+                imp: ObjectImpl::Struct,
+            })
+        );
+        // Same crate and name, but neither path is at the crate root, so this is a different item
+        assert_eq!(
+            run_resolve_uniffi_meta_type(
+                &ir,
+                &mut cache,
+                "remote_types::consumer",
+                "std::fmt::Error",
+                None
+            ),
+            Err(ErrorKind::NotFound)
+        );
     }
 
     #[test]

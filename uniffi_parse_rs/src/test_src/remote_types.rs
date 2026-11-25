@@ -36,6 +36,11 @@ pub mod remote {
         lower: |json| json.to_string(),
         try_lift: |value| Ok(serde_json::from_str(&value)?),
     });
+
+    use std::io::Error;
+
+    #[uniffi::remote(Object)]
+    pub struct Error;
 }
 
 pub mod consumer {

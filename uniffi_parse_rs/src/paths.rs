@@ -296,21 +296,25 @@ impl<'ir> RPath<'ir> {
         if let Some(result) = cache.remote_items.get(&key) {
             return Ok(result.clone());
         }
-        let result = crate_root.find_remote_item(&path)?;
+        let mut remote_items = vec![];
+        crate_root.collect_remote_items(&mut remote_items)?;
+        let result = unique_remote_item(&remote_items, |original| original == path).or_else(|| {
+            unique_remote_item(&remote_items, |original| {
+                same_external_item(original, &path)
+            })
+        });
         cache.remote_items.insert(key, result.clone());
         Ok(result)
     }
 
     /// Non-caching part of [Self::resolve_remote_item]
     ///
-    /// Searches this module and its submodules.
-    fn find_remote_item(&self, path: &[String]) -> Result<Option<Self>> {
-        let module = self.module()?;
-        for item in module.items.iter() {
+    /// Collects the remote items in this module and its submodules, together with the paths to
+    /// their original items.
+    fn collect_remote_items(&self, remote_items: &mut Vec<RemoteItem<'ir>>) -> Result<()> {
+        for item in self.module()?.items.iter() {
             if let Item::Module(_) = item {
-                if let Some(found) = self.append_child(item).find_remote_item(path)? {
-                    return Ok(Some(found));
-                }
+                self.append_child(item).collect_remote_items(remote_items)?;
                 continue;
             }
             // `use_remote_type!` items point to remote items in other crates, skip those
@@ -320,15 +324,15 @@ impl<'ir> RPath<'ir> {
             let Some(ident) = item.ident() else {
                 continue;
             };
-            if self
-                .original_paths(&ident)?
-                .iter()
-                .any(|original| same_external_item(original, path))
-            {
-                return Ok(Some(self.append_child(item)));
+            let original_paths = self.original_paths(&ident)?;
+            if !original_paths.is_empty() {
+                remote_items.push(RemoteItem {
+                    path: self.append_child(item),
+                    original_paths,
+                });
             }
         }
-        Ok(None)
+        Ok(())
     }
 
     /// Paths to the original item for the remote item named `ident` in this module
@@ -808,13 +812,36 @@ pub struct LookupCache<'ir> {
     pub remote_items: HashMap<String, Option<RPath<'ir>>>,
 }
 
+/// A remote item and the paths to the original item it was declared for
+struct RemoteItem<'ir> {
+    path: RPath<'ir>,
+    original_paths: Vec<Vec<String>>,
+}
+
+/// Get the remote item with an original path that matches, if there's exactly one
+fn unique_remote_item<'ir>(
+    remote_items: &[RemoteItem<'ir>],
+    matches: impl Fn(&[String]) -> bool,
+) -> Option<RPath<'ir>> {
+    let mut found = remote_items
+        .iter()
+        .filter(|item| item.original_paths.iter().any(|original| matches(original)));
+    match (found.next(), found.next()) {
+        (Some(item), None) => Some(item.path.clone()),
+        _ => None,
+    }
+}
+
 /// Do two paths point to the same item in a crate we didn't parse?
 ///
-/// We can't follow re-exports in that crate, so compare the crate and the item name instead,
-/// for example `other_crate::submod::Item` and `other_crate::Item`.
-/// UniFFI already requires type names to be unique within a crate.
+/// We can't follow re-exports in that crate, so we assume an item at the crate root re-exports the
+/// item with the same name in one of its modules, for example `other_crate::Item` and
+/// `other_crate::submod::Item`.  Items with the same name in two different modules, like
+/// `std::io::Error` and `std::fmt::Error`, don't match.
 fn same_external_item(original: &[String], path: &[String]) -> bool {
-    original.first() == path.first() && original.last() == path.last()
+    (original.len() == 2 || path.len() == 2)
+        && original.first() == path.first()
+        && original.last() == path.last()
 }
 
 fn path_idents(path: &Path) -> Vec<String> {
