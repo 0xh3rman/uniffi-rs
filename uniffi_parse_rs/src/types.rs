@@ -351,6 +351,10 @@ impl<'ir> RPath<'ir> {
             Type::Arc(ty) if ty.is_self() => Ok(SelfType {
                 takes_self_by_arc: true,
             }),
+            // Records and enums can also take `self` by value, since they're lifted by value
+            ty if ty.is_self() => Ok(SelfType {
+                takes_self_by_arc: false,
+            }),
             _ => Err(Error::new(self.file_id(), syn_ty.span(), InvalidSelfType)),
         }
     }
@@ -1533,6 +1537,50 @@ pub mod tests {
             Ok(uniffi_meta::Type::Enum {
                 module_path: "remote_types".into(),
                 name: "LogLevel".into(),
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(&ir, &mut cache, "remote_types::consumer", "Url", None),
+            Ok(uniffi_meta::Type::Object {
+                module_path: "remote_types::remote".into(),
+                name: "Url".into(),
+                imp: ObjectImpl::Struct,
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(
+                &ir,
+                &mut cache,
+                "remote_types::consumer",
+                "url::parser::Url",
+                None
+            ),
+            Ok(uniffi_meta::Type::Object {
+                module_path: "remote_types::remote".into(),
+                name: "Url".into(),
+                imp: ObjectImpl::Struct,
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(
+                &ir,
+                &mut cache,
+                "remote_types::consumer",
+                "anyhow::Error",
+                None
+            ),
+            Ok(uniffi_meta::Type::Object {
+                module_path: "remote_types".into(),
+                name: "AnyhowError".into(),
+                imp: ObjectImpl::Struct,
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(&ir, &mut cache, "remote_types::consumer", "usize", None),
+            Ok(uniffi_meta::Type::Custom {
+                module_path: "remote_types::remote".into(),
+                name: "Count".into(),
+                builtin: Box::new(uniffi_meta::Type::UInt64),
             })
         );
     }
