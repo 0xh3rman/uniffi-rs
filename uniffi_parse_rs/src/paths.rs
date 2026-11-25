@@ -265,17 +265,107 @@ impl<'ir> RPath<'ir> {
                 trace!("  resolved: {}", rpath.path_string());
                 Ok(rpath)
             }
-            None => match get_builtin_item(path) {
-                Some(item) => {
+            None => {
+                if let Some(item) = get_builtin_item(path) {
                     trace!("  resolved to builtin: {item:?}");
-                    Ok(RPath::new(item))
+                    return Ok(RPath::new(item));
                 }
-                None => {
-                    trace!("  not found");
-                    Err(Error::new(self.file_id(), path.span(), NotFound))
+                if let Some(rpath) = self.resolve_remote_item(cache, path)? {
+                    trace!("  resolved to remote item: {}", rpath.path_string());
+                    return Ok(rpath);
                 }
-            },
+                trace!("  not found");
+                Err(Error::new(self.file_id(), path.span(), NotFound))
+            }
         }
+    }
+
+    /// Resolve a path to an item from a crate we didn't parse to the remote item for it
+    ///
+    /// Remote items are declared next to a `use` statement for the original item, for example
+    /// `use url::Url` followed by `#[uniffi::remote(Object)] pub struct Url;`.
+    /// Other modules can use the original path to refer to the item.
+    fn resolve_remote_item(
+        &self,
+        cache: &mut LookupCache<'ir>,
+        path: &Path,
+    ) -> Result<Option<Self>> {
+        let crate_root = self.crate_root()?;
+        let path = path_idents(path);
+        let key = format!("{}::{}", crate_root.path_string(), path.join("::"));
+        if let Some(result) = cache.remote_items.get(&key) {
+            return Ok(result.clone());
+        }
+        let result = crate_root.find_remote_item(&path)?;
+        cache.remote_items.insert(key, result.clone());
+        Ok(result)
+    }
+
+    /// Non-caching part of [Self::resolve_remote_item]
+    ///
+    /// Searches this module and its submodules.
+    fn find_remote_item(&self, path: &[String]) -> Result<Option<Self>> {
+        let module = self.module()?;
+        for item in module.items.iter() {
+            if let Item::Module(_) = item {
+                if let Some(found) = self.append_child(item).find_remote_item(path)? {
+                    return Ok(Some(found));
+                }
+                continue;
+            }
+            // `use_remote_type!` items point to remote items in other crates, skip those
+            if !item.is_special() || matches!(item, Item::UseRemoteType(_)) {
+                continue;
+            }
+            let Some(ident) = item.ident() else {
+                continue;
+            };
+            if self
+                .original_paths(&ident)?
+                .iter()
+                .any(|original| same_external_item(original, path))
+            {
+                return Ok(Some(self.append_child(item)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Paths to the original item for the remote item named `ident` in this module
+    ///
+    /// These come from a `use` statement that imports the item as `ident`, or from a type alias
+    /// named `ident`.
+    fn original_paths(&self, ident: &Ident) -> Result<Vec<Vec<String>>> {
+        let module = self.module()?;
+        let use_path = |ident: &Ident| {
+            module.items.iter().find_map(|item| match item {
+                Item::UseItem(use_item) if use_item.ident == *ident => {
+                    Some(path_idents(&use_item.path))
+                }
+                _ => None,
+            })
+        };
+        let mut paths = Vec::from_iter(use_path(ident));
+        for item in module.items.iter() {
+            let Item::Type(alias) = item else {
+                continue;
+            };
+            if alias.ident != *ident {
+                continue;
+            }
+            let syn::Type::Path(type_path) = &*alias.ty else {
+                continue;
+            };
+            let mut target = path_idents(&type_path.path);
+            // Expand the first segment if it was imported, for example `type Count = Value` with
+            // `use other_crate::Value` gives `other_crate::Value`.
+            if let Some(mut expanded) = use_path(&type_path.path.segments[0].ident.unraw()) {
+                expanded.extend(target.drain(1..));
+                target = expanded;
+            }
+            paths.push(target);
+        }
+        Ok(paths)
     }
 
     /// Get a child item for this path
@@ -713,15 +803,29 @@ pub struct LookupCache<'ir> {
     // Cached results for `RPath::public_path_to_item()`
     // This maps path strings to lookup results
     pub public_paths: HashMap<String, Result<ItemNames>>,
+    // Cached results for `RPath::resolve_remote_item()`
+    // This maps crate names and paths to lookup results
+    pub remote_items: HashMap<String, Option<RPath<'ir>>>,
+}
+
+/// Do two paths point to the same item in a crate we didn't parse?
+///
+/// We can't follow re-exports in that crate, so compare the crate and the item name instead,
+/// for example `other_crate::submod::Item` and `other_crate::Item`.
+/// UniFFI already requires type names to be unique within a crate.
+fn same_external_item(original: &[String], path: &[String]) -> bool {
+    original.first() == path.first() && original.last() == path.last()
+}
+
+fn path_idents(path: &Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|seg| seg.ident.unraw().to_string())
+        .collect()
 }
 
 fn get_builtin_item(path: &Path) -> Option<&'static Item> {
-    let path = path
-        .segments
-        .iter()
-        .map(|seg| seg.ident.unraw().to_string())
-        .collect::<Vec<_>>()
-        .join("::");
+    let path = path_idents(path).join("::");
 
     match path.as_str() {
         "std::primitive::unit" | "core::primitive::unit" => {

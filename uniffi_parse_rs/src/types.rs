@@ -1535,6 +1535,64 @@ pub mod tests {
                 name: "LogLevel".into(),
             })
         );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(&ir, &mut cache, "remote_types::consumer", "Url", None),
+            Ok(uniffi_meta::Type::Object {
+                module_path: "remote_types::remote".into(),
+                name: "Url".into(),
+                imp: ObjectImpl::Struct,
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(
+                &ir,
+                &mut cache,
+                "remote_types::consumer",
+                "url::parser::Url",
+                None
+            ),
+            Ok(uniffi_meta::Type::Object {
+                module_path: "remote_types::remote".into(),
+                name: "Url".into(),
+                imp: ObjectImpl::Struct,
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(
+                &ir,
+                &mut cache,
+                "remote_types::consumer",
+                "anyhow::Error",
+                None
+            ),
+            Ok(uniffi_meta::Type::Object {
+                module_path: "remote_types".into(),
+                name: "AnyhowError".into(),
+                imp: ObjectImpl::Struct,
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(&ir, &mut cache, "remote_types::consumer", "usize", None),
+            Ok(uniffi_meta::Type::Custom {
+                module_path: "remote_types::remote".into(),
+                name: "Count".into(),
+                builtin: Box::new(uniffi_meta::Type::UInt64),
+            })
+        );
+        assert_eq!(
+            run_resolve_uniffi_meta_type(
+                &ir,
+                &mut cache,
+                "remote_types::consumer",
+                "serde_json::Value",
+                None
+            ),
+            Ok(uniffi_meta::Type::Custom {
+                module_path: "remote_types::remote".into(),
+                name: "Json".into(),
+                builtin: Box::new(uniffi_meta::Type::String),
+            })
+        );
     }
 
     #[test]
